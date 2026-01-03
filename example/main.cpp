@@ -49,32 +49,39 @@ int main(int argc, char* argv[]) {
         uint16_t port = 6969;
         if (argc > 1) port = static_cast<uint16_t>(std::stoi(argv[1]));
 
-        // Create a 10MB file for better measurement granularity
+        // Create a 10MB file for testing tsize and throughput
         ensureLargeTestFile("large_test.bin", 10);
+
+        // Display filesystem capacity for the tsize check verification
+        auto space = std::filesystem::space(std::filesystem::current_path());
+        std::cout << "[System] Available Disk Space: " << space.available / (1024 * 1024) << " MB" << std::endl;
 
         tftp::Server server(port);
 
         // Handler responsible for reading the file from disk
         server.setReadHandler([](const std::string& fname) -> std::vector<uint8_t> {
-            std::cout << "[CALLBACK] Starting RRQ for: " << fname << std::endl;
+            std::cout << "[CALLBACK] RRQ Received: " << fname << std::endl;
             auto data = readFile(fname);
+            std::cout << "[CALLBACK] File size determined: " << data.size() << " bytes (RFC 2349 tsize ready)" << std::endl;
             return data;
         });
 
         // Handler responsible for writing the file to disk
         server.setWriteHandler([](const std::string& fname, const std::vector<uint8_t>& data) {
-            std::cout << "[CALLBACK] Starting WRQ for: " << fname << std::endl;
+            std::cout << "[CALLBACK] WRQ Completed: " << fname << std::endl;
+            std::cout << "[CALLBACK] Received " << data.size() << " total bytes." << std::endl;
             writeFile(fname, data);
         });
 
         std::cout << "==================================================" << std::endl;
-        std::cout << "  TFTP Server (Modern C++ / RFC 2347 Support)     " << std::endl;
+        std::cout << "  TFTP Server (RFC 1350, 2347, 2348, 2349)        " << std::endl;
         std::cout << "  Listening on Port: " << port << std::endl;
         std::cout << "==================================================" << std::endl;
-        std::cout << "To verify throughput with different blocksizes:" << std::endl;
-        std::cout << "  1. Connect: tftp 127.0.0.1 " << port << std::endl;
-        std::cout << "  2. (Optional) Set blksize: tftp> blksize 1428" << std::endl;
-        std::cout << "  3. Transfer: tftp> get large_test.bin" << std::endl;
+        std::cout << "HOW TO TEST NEW OPTIONS (Linux/Mac tftp client):" << std::endl;
+        std::cout << "  1. Connect:     tftp 127.0.0.1 " << port << std::endl;
+        std::cout << "  2. Set Mode:    tftp> mode octet" << std::endl;
+        std::cout << "  3. Set Timeout: tftp> timeout 5" << std::endl;
+        std::cout << "  4. Transfer:    tftp> get large_test.bin" << std::endl;
         std::cout << "==================================================" << std::endl;
         
         server.run();
