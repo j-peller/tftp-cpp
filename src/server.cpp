@@ -17,12 +17,11 @@ static constexpr int    DEFAULT_TIMEOUT_SEC = 2;
 static constexpr int    MIN_TIMEOUT_SEC = 1;
 static constexpr int    MAX_TIMEOUT_SEC = 255;
 
-Server::Server(uint16_t port)
-    : TftpBase(port)
+Server::Server(const ServerConfig& config)
+    : TftpBase(config.port), m_config(config)
 {
 
 }
-
 
 void Server::run()
 {
@@ -73,13 +72,14 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
     // Per RFC 1350, the server MUST use a new port for the transfer so the 
     // main port remains available for other requests.
     UDPSocket transferSocket(0); 
-    size_t blockSize  = DEFAULT_BLKSIZE;
-    int    timeoutSec = DEFAULT_TIMEOUT_SEC;
+    size_t blockSize  = m_config.blockSize;
+    int    timeoutSec = m_config.timeoutSec;
     bool   useOack    = false;
+    auto   filename = pkt->getFilename();
     
-    std::cout << "Handling RRQ for: " << pkt->filename << " on local TID: " << transferSocket.getPort() << std::endl;
+    std::cout << "Handling RRQ for: " << filename << " on local TID: " << transferSocket.getPort() << std::endl;
 
-    if (!onRead) 
+    if (!m_onRead) 
     {
         ErrorPacket err(ErrorCode::NotDefined, "Read not implemented");
         transferSocket.sendTo(err.serialize(), clientAddr);
@@ -88,7 +88,7 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
 
     std::vector<uint8_t> fileContent;
     try {
-        fileContent = onRead(pkt->filename);
+        fileContent = m_onRead(filename);
     } catch (...) {
         ErrorPacket err(ErrorCode::FileNotFound, "File not found");
         transferSocket.sendTo(err.serialize(), clientAddr);
@@ -97,10 +97,11 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
 
     // RFC 2348 Blksize
     auto oack = std::make_unique<OackPacket>();
-    if (pkt->options.count("blksize")) 
+    auto options = pkt->getOptions();
+    if (options.count("blksize")) 
     {
         try {
-            int requestedSize = std::stoi(pkt->options.at("blksize"));
+            int requestedSize = std::stoi(options.at("blksize"));
             blockSize = std::clamp(static_cast<size_t>(requestedSize), static_cast<size_t>(MIN_NEGOTIATED_BLKSIZE), MAX_NEGOTIATED_BLKSIZE); // TFTP limits
             oack->addOption("blksize", std::to_string(blockSize));
             useOack = true;
@@ -108,10 +109,10 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
     }
 
     // RFC 2349 TIMEOUT Option
-    if (pkt->options.count("timeout"))
+    if (options.count("timeout"))
     {
         try {
-            timeoutSec = std::stoi(pkt->options.at("timeout"));
+            timeoutSec = std::stoi(options.at("timeout"));
             timeoutSec = std::clamp(timeoutSec, MIN_TIMEOUT_SEC, MAX_TIMEOUT_SEC); // TFTP limits
             oack->addOption("timeout", std::to_string(timeoutSec));
             useOack = true;
@@ -119,7 +120,7 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
     }
 
     // RFC 2349 TSIZE Option
-    if (pkt->options.count("tsize"))
+    if (options.count("tsize"))
     {
         // In Read Request, a size of "0" is specified in the request
         // and the size of the file, in octets, is returned in the OACK
@@ -143,7 +144,7 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
                 {
                     // Client confirms OACK with ACK block 0
                     auto ack = static_cast<AckPacket*>(response.get());
-                    if (ack->blockNumber == 0) 
+                    if (ack->getBlockNumber() == 0) 
                     {
                        confirmed = true;
                     }
@@ -185,7 +186,7 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
                     if (response->getOpcode() == Opcode::ACK) 
                     {
                         auto ack = static_cast<AckPacket*>(response.get());
-                        if (ack->blockNumber == blockNumber) 
+                        if (ack->getBlockNumber() == blockNumber) 
                         {
                            acked = true;
                            break;
@@ -226,24 +227,26 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
 {
     // 1. Create a TRANSFER SESSION (TID)
     UDPSocket transferSocket(0);
+    auto options  = pkt->getOptions();
+    auto filename = pkt->getFilename();
     
     // DEBUG: Print all options received from the client
-    std::cout << "[DEBUG] WRQ for " << pkt->filename << " Options count: " << pkt->options.size() << std::endl;
-    for (auto const& [key, val] : pkt->options) {
+    std::cout << "[DEBUG] WRQ for " << filename << " Options count: " << options.size() << std::endl;
+    for (auto const& [key, val] : options) {
         std::cout << "  - " << key << ": " << val << std::endl;
     }
 
-    size_t blockSize  = DEFAULT_BLKSIZE; // Default block size
-    int    timeoutSec = DEFAULT_TIMEOUT_SEC;
+    size_t blockSize  = m_config.blockSize;
+    int    timeoutSec = m_config.timeoutSec;
     size_t totalExpectedSize = 0;
     bool   useOack = false;
 
     // RFC 2348 Blksize
     auto oack = std::make_unique<OackPacket>();
-    if (pkt->options.count("blksize")) 
+    if (options.count("blksize")) 
     {
         try {
-            int requestedSize = std::stoi(pkt->options.at("blksize"));
+            int requestedSize = std::stoi(options.at("blksize"));
             blockSize = std::clamp(static_cast<size_t>(requestedSize), static_cast<size_t>(8), MAX_NEGOTIATED_BLKSIZE); // TFTP limits
             oack->addOption("blksize", std::to_string(blockSize));
             useOack = true;
@@ -251,10 +254,10 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
     }
 
     // RFC 2349 TIMEOUT Option
-    if (pkt->options.count("timeout"))
+    if (options.count("timeout"))
     {
         try {
-            timeoutSec = std::stoi(pkt->options.at("timeout"));
+            timeoutSec = std::stoi(options.at("timeout"));
             timeoutSec = std::clamp(timeoutSec, MIN_TIMEOUT_SEC, MAX_TIMEOUT_SEC); // TFTP limits
             oack->addOption("timeout", std::to_string(timeoutSec));
             useOack = true;
@@ -265,10 +268,10 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
     // In Write Request packets, the size of the file, in octets, is specified 
     // in the request and echoed back in the OACK.  If the file is too large 
     // for the server to handle, it may abort the transfer with an Error packet (error code 3)
-    if (pkt->options.count("tsize"))
+    if (options.count("tsize"))
     {
         // Extract the expected size from the WRQ options
-        totalExpectedSize = std::stoul(pkt->options.at("tsize"));
+        totalExpectedSize = std::stoul(options.at("tsize"));
 
         // Legacy applications may not send any tsize option, therefore skipping this check
         // and probably allowing to exhaust the filesystem. TODO
@@ -287,7 +290,7 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
         useOack = true;
     }
 
-    if (!onWrite) 
+    if (!m_onWrite) 
     {
         ErrorPacket err(ErrorCode::NotDefined, "Write not implemented");
         transferSocket.sendTo(err.serialize(), clientAddr);
@@ -331,30 +334,36 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
                     if (packet->getOpcode() == Opcode::DATA) 
                     {
                         auto dataPkt = static_cast<DataPacket*>(packet.get());
+
+                        uint16_t blockNum = dataPkt->getBlockNumber();
                         
-                        if (dataPkt->blockNumber == expectedBlock) 
+                        if (blockNum == expectedBlock) 
                         {
                             // Correct block received
-                            receivedFile.insert(receivedFile.end(), dataPkt->data.begin(), dataPkt->data.end());
+                            auto data = dataPkt->getData();
+
+                            // Append data to file buffer
+                            receivedFile.insert(receivedFile.end(), data.begin(), data.end());
                             
                             // Send ACK for this block
                             AckPacket ack(expectedBlock);
                             transferSocket.sendTo(ack.serialize(), clientAddr);
                             
                             // Check if this was the last packet
-                            if (dataPkt->data.size() < blockSize) 
+                            if (data.size() < blockSize) 
                             {
                                 transferActive = false;
                             }
                             
+                            // Move to next expected block
                             expectedBlock++;
                             receivedData = true;
                             break;
                         } 
-                        else if (dataPkt->blockNumber < expectedBlock) 
+                        else if (blockNum < expectedBlock) 
                         {
                             // Duplicate block (retry) - re-send ACK for previous block
-                            AckPacket ack(dataPkt->blockNumber);
+                            AckPacket ack(blockNum);
                             transferSocket.sendTo(ack.serialize(), clientAddr);
                         }
                     } 
@@ -386,18 +395,13 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
     }
 
     // 3. Finalize Write (User Logic)
-    try 
-    {
-        onWrite(pkt->filename, receivedFile);
-        std::cout << "Write transfer for " << pkt->filename << " complete." << std::endl;
-    } 
-    catch (const std::exception& e) 
-    {
+    try {
+        m_onWrite(filename, receivedFile);
+        std::cout << "Write transfer for " << filename << " complete." << std::endl;
+    } catch (const std::exception& e) {
         ErrorPacket err(ErrorCode::AccessViolation, e.what());
         transferSocket.sendTo(err.serialize(), clientAddr);
     }
 }
-
-
 
 } // namespace tftp
