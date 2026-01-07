@@ -3,19 +3,22 @@
 namespace tftp {
 
 // Helper: Append uint16 in Network Byte Order (Big Endian)
-void appendU16(std::vector<uint8_t>& buf, uint16_t val) {
+void appendU16(std::vector<uint8_t>& buf, uint16_t val) 
+{
     buf.push_back((val >> 8) & 0xFF);
     buf.push_back(val & 0xFF);
 }
 
 // Helper: Append String + Null Terminator
-void appendString(std::vector<uint8_t>& buf, const std::string& str) {
+void appendString(std::vector<uint8_t>& buf, const std::string& str) 
+{
     buf.insert(buf.end(), str.begin(), str.end());
     buf.push_back(0x00);
 }
 
 // Helper: Read String from vector buffer
-std::string readString(const std::vector<uint8_t>& buffer, size_t& offset) {
+std::string readString(const std::vector<uint8_t>& buffer, size_t& offset) 
+{
     std::string str;
     size_t len = buffer.size();
     while (offset < len && buffer[offset] != 0x00) {
@@ -26,8 +29,9 @@ std::string readString(const std::vector<uint8_t>& buffer, size_t& offset) {
     return str;
 }
 
-//--- Packer Factory
-std::unique_ptr<Packet> Packet::parse(const uint8_t* buffer, size_t len) {
+//--- Packet Factory
+std::unique_ptr<Packet> Packet::parse(const uint8_t* buffer, size_t len) 
+{
     if (len < 2) 
     {
         throw std::runtime_error("Packet too small for TFTP packet");
@@ -99,24 +103,19 @@ std::unique_ptr<Packet> Packet::parse(const uint8_t* buffer, size_t len) {
 
 //--- Request Package
 RequestPacket::RequestPacket(Opcode type, std::string filename, std::string mode)
-    : type(type), filename(std::move(filename)), mode(std::move(mode)) 
+    : m_type(type), m_filename(std::move(filename)), m_mode(std::move(mode)) 
 {
 
-}
-
-void RequestPacket::addOption(const std::string& key, const std::string& value) 
-{
-    options[key] = value;
 }
 
 std::vector<uint8_t> RequestPacket::serialize() const 
 {
     std::vector<uint8_t> buf;
-    appendU16(buf, static_cast<uint16_t>(type));
-    appendString(buf, filename);
-    appendString(buf, mode);
+    appendU16(buf, static_cast<uint16_t>(m_type));
+    appendString(buf, m_filename);
+    appendString(buf, m_mode);
 
-    for (const auto& [key, val] : options) 
+    for (const auto& [key, val] : m_options) 
     {
         appendString(buf, key);
         appendString(buf, val);
@@ -128,7 +127,7 @@ std::vector<uint8_t> RequestPacket::serialize() const
 
 //--- Data Package
 DataPacket::DataPacket(uint16_t blockNum, const std::vector<uint8_t>& data)
-    : blockNumber(blockNum), data(data) 
+    : m_blockNumber(blockNum), m_data(data) 
 {
 
 }
@@ -137,9 +136,9 @@ std::vector<uint8_t> DataPacket::serialize() const
 {
     std::vector<uint8_t> buf;
     appendU16(buf, static_cast<uint16_t>(Opcode::DATA));
-    appendU16(buf, blockNumber);
+    appendU16(buf, m_blockNumber);
 
-    buf.insert(buf.end(), data.begin(), data.end());
+    buf.insert(buf.end(), m_data.begin(), m_data.end());
     
     return buf;
 }
@@ -147,7 +146,7 @@ std::vector<uint8_t> DataPacket::serialize() const
 
 //--- Ack Package
 AckPacket::AckPacket(uint16_t blockNum) 
-    : blockNumber(blockNum) 
+    : m_blockNumber(blockNum) 
 {
 
 }
@@ -156,7 +155,7 @@ std::vector<uint8_t> AckPacket::serialize() const
 {
     std::vector<uint8_t> buf;
     appendU16(buf, static_cast<uint16_t>(Opcode::ACK));
-    appendU16(buf, blockNumber);
+    appendU16(buf, m_blockNumber);
 
     return buf;
 }
@@ -164,7 +163,7 @@ std::vector<uint8_t> AckPacket::serialize() const
 
 //--- Error Package
 ErrorPacket::ErrorPacket(ErrorCode code, std::string msg)
-    : errorCode(code), errorMessage(std::move(msg)) 
+    : m_errorCode(code), m_errorMessage(std::move(msg)) 
 {
 
 }
@@ -173,8 +172,8 @@ std::vector<uint8_t> ErrorPacket::serialize() const
 {
     std::vector<uint8_t> buf;
     appendU16(buf, static_cast<uint16_t>(Opcode::ERROR));
-    appendU16(buf, static_cast<uint16_t>(errorCode));
-    appendString(buf, errorMessage);
+    appendU16(buf, static_cast<uint16_t>(m_errorCode));
+    appendString(buf, m_errorMessage);
 
     return buf;
 }
@@ -183,7 +182,7 @@ std::vector<uint8_t> ErrorPacket::serialize() const
 //--- OAck Package
 void OackPacket::addOption(const std::string& key, const std::string& value) 
 {
-    options[key] = value;
+    m_options[key] = value;
 }
 
 std::vector<uint8_t> OackPacket::serialize() const 
@@ -191,7 +190,7 @@ std::vector<uint8_t> OackPacket::serialize() const
     std::vector<uint8_t> buf;
     appendU16(buf, static_cast<uint16_t>(Opcode::OACK));
 
-    for (const auto& [key, val] : options) 
+    for (const auto& [key, val] : m_options) 
     {
         appendString(buf, key);
         appendString(buf, val);
@@ -200,4 +199,4 @@ std::vector<uint8_t> OackPacket::serialize() const
     return buf;
 }
 
-}
+} // namespace tftp
