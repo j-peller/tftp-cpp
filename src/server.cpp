@@ -70,14 +70,34 @@ void Server::handleRequest(const struct sockaddr_in& clientAddr, const std::vect
     {
         auto packet = Packet::parse(rawPacket.data(), rawPacket.size());
 
+        if (packet->getOpcode() != Opcode::RRQ && packet->getOpcode() != Opcode::WRQ)
+        {
+            if (packet->getOpcode() != Opcode::ERROR)
+            {
+                UDPSocket errSocket(0);
+                ErrorPacket err(ErrorCode::IllegalOp, "Expected RRQ or WRQ");
+                errSocket.sendTo(err.serialize(), clientAddr);
+            }
+            return;
+        }
+
+        auto* reqPkt = static_cast<RequestPacket*>(packet.get());
+        if (reqPkt->getMode() != "octet" && reqPkt->getMode() != "netascii")
+        {
+            UDPSocket errSocket(0);
+            ErrorPacket err(ErrorCode::IllegalOp, "Unsupported transfer mode: " + reqPkt->getMode());
+            errSocket.sendTo(err.serialize(), clientAddr);
+            return;
+        }
+
         // dispatch packet to correct handler
         if (packet->getOpcode() == Opcode::RRQ)
         {
-            handleReadRequest(clientAddr, static_cast<RequestPacket*>(packet.get()));
+            handleReadRequest(clientAddr, reqPkt);
         }
-        else if (packet->getOpcode() == Opcode::WRQ)
+        else
         {
-            handleWriteRequest(clientAddr, static_cast<RequestPacket*>(packet.get()));
+            handleWriteRequest(clientAddr, reqPkt);
         }
     }
     catch(const std::exception& e)
