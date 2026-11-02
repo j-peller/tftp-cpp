@@ -1,10 +1,12 @@
-cmake_minimum_required(VERSION 4.2)
+cmake_minimum_required(VERSION 3.25)
 project(tftp 
     VERSION 0.1.0 
     LANGUAGES CXX
 )
 
 include(GNUInstallDirs)
+
+option(TFTP_BUILD_TESTS "Build the tftp test suite (GoogleTest + Python peers)" ${PROJECT_IS_TOP_LEVEL})
 
 add_library(tftp_core)
 add_library(tftp::tftp_core ALIAS tftp_core)
@@ -14,6 +16,7 @@ target_sources(tftp_core
         src/socket.cpp
         src/packet.cpp
         src/server.cpp
+        src/client.cpp
     PUBLIC
         FILE_SET 
             HEADERS
@@ -22,7 +25,9 @@ target_sources(tftp_core
         FILES
             include/tftp/socket.h
             include/tftp/packet.h
+            include/tftp/tftp.h
             include/tftp/server.h
+            include/tftp/client.h
 )
 
 target_compile_features(tftp_core PUBLIC cxx_std_17)
@@ -35,6 +40,11 @@ target_include_directories(tftp_core
 
 find_package(Threads REQUIRED)
 target_link_libraries(tftp_core PUBLIC Threads::Threads)
+
+if(TFTP_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 
 install(
