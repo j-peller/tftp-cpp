@@ -10,6 +10,11 @@ namespace tftp {
 
 namespace {
 
+bool sameTid(const struct sockaddr_in& a, const struct sockaddr_in& b)
+{
+    return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
+}
+
 // Strict decimal unsigned parser: rejects empty strings, signs, and non-digits.
 std::optional<size_t> parseUnsigned(const std::string& str)
 {
@@ -201,8 +206,14 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
         struct sockaddr_in peer;
         bool confirmed = false;
 
-        if (transferSocket.recvFrom(rxBuffer, peer, timeoutSec)) 
+        while (transferSocket.recvFrom(rxBuffer, peer, timeoutSec)) 
         {
+            if (!sameTid(peer, clientAddr))
+            {
+                ErrorPacket err(ErrorCode::UnknownTID, "Unknown transfer ID");
+                transferSocket.sendTo(err.serialize(), peer);
+                continue;
+            }
             try {
                 auto response = Packet::parse(rxBuffer.data(), rxBuffer.size());
                 if (response->getOpcode() == Opcode::ACK) 
@@ -215,6 +226,7 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
                     }
                 }
             } catch(...) {}
+            break;
         }
 
         if (!confirmed)
@@ -246,6 +258,12 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
         {
             // Re-using the socket wrapper logic on the transfer-specific socket
             if (transferSocket.recvFrom(rxBuffer, peer, timeoutSec)) { 
+                if (!sameTid(peer, clientAddr))
+                {
+                    ErrorPacket err(ErrorCode::UnknownTID, "Unknown transfer ID");
+                    transferSocket.sendTo(err.serialize(), peer);
+                    continue;
+                }
                 try {
                     auto response = Packet::parse(rxBuffer.data(), rxBuffer.size());
                     if (response->getOpcode() == Opcode::ACK) 
@@ -397,6 +415,12 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
         {
             if (transferSocket.recvFrom(rxBuffer, peer, timeoutSec)) 
             {
+                if (!sameTid(peer, clientAddr))
+                {
+                    ErrorPacket err(ErrorCode::UnknownTID, "Unknown transfer ID");
+                    transferSocket.sendTo(err.serialize(), peer);
+                    continue;
+                }
                 try {
                     auto packet = Packet::parse(rxBuffer.data(), rxBuffer.size());
                     if (packet->getOpcode() == Opcode::DATA) 
