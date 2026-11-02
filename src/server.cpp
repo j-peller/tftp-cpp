@@ -4,8 +4,26 @@
 #include <algorithm>
 #include <iostream>
 #include <filesystem>
+#include <optional>
 
 namespace tftp {
+
+namespace {
+
+// Strict decimal unsigned parser: rejects empty strings, signs, and non-digits.
+std::optional<size_t> parseUnsigned(const std::string& str)
+{
+    if (str.empty() || str.size() > 19) return std::nullopt;
+    unsigned long long val = 0;
+    for (char c : str)
+    {
+        if (c < '0' || c > '9') return std::nullopt;
+        val = val * 10 + static_cast<unsigned long long>(c - '0');
+    }
+    return static_cast<size_t>(val);
+}
+
+} // namespace
 
 // Default MTU-safe block size limit to avoid fragmentation
 // 1500 (Ethernet) - 20 (IP) - 8 (UDP) - 4 (TFTP) - 40 (Safety/VLAN) = 1428
@@ -136,28 +154,30 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
         return;
     }
 
-    // RFC 2348 Blksize
+    // RFC 2348 Blksize (valid requests are >= 8; server may clamp to its maximum)
     auto oack = std::make_unique<OackPacket>();
     auto options = pkt->getOptions();
     if (options.count("blksize")) 
     {
-        try {
-            int requestedSize = std::stoi(options.at("blksize"));
-            blockSize = std::clamp(static_cast<size_t>(requestedSize), static_cast<size_t>(MIN_NEGOTIATED_BLKSIZE), MAX_NEGOTIATED_BLKSIZE); // TFTP limits
+        auto requestedSize = parseUnsigned(options.at("blksize"));
+        if (requestedSize && *requestedSize >= MIN_NEGOTIATED_BLKSIZE)
+        {
+            blockSize = std::min(*requestedSize, MAX_NEGOTIATED_BLKSIZE);
             oack->addOption("blksize", std::to_string(blockSize));
             useOack = true;
-        } catch (...) {}
+        }
     }
 
-    // RFC 2349 TIMEOUT Option
+    // RFC 2349 TIMEOUT Option (must be in [1, 255] and echoed verbatim, never clamped)
     if (options.count("timeout"))
     {
-        try {
-            timeoutSec = std::stoi(options.at("timeout"));
-            timeoutSec = std::clamp(timeoutSec, MIN_TIMEOUT_SEC, MAX_TIMEOUT_SEC); // TFTP limits
+        auto requestedTimeout = parseUnsigned(options.at("timeout"));
+        if (requestedTimeout && *requestedTimeout >= MIN_TIMEOUT_SEC && *requestedTimeout <= MAX_TIMEOUT_SEC)
+        {
+            timeoutSec = static_cast<int>(*requestedTimeout);
             oack->addOption("timeout", std::to_string(timeoutSec));
             useOack = true;
-        } catch (...) {}
+        }
     }
 
     // RFC 2349 TSIZE Option
@@ -165,8 +185,12 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
     {
         // In Read Request, a size of "0" is specified in the request
         // and the size of the file, in octets, is returned in the OACK
-        oack->addOption("tsize", std::to_string(fileContent.size()));
-        useOack = true;
+        auto requestedTsize = parseUnsigned(options.at("tsize"));
+        if (requestedTsize && *requestedTsize == 0)
+        {
+            oack->addOption("tsize", std::to_string(fileContent.size()));
+            useOack = true;
+        }
     }
 
     // If options were negotiated, send OACK
@@ -282,27 +306,29 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
     size_t totalExpectedSize = 0;
     bool   useOack = false;
 
-    // RFC 2348 Blksize
+    // RFC 2348 Blksize (valid requests are >= 8; server may clamp to its maximum)
     auto oack = std::make_unique<OackPacket>();
     if (options.count("blksize")) 
     {
-        try {
-            int requestedSize = std::stoi(options.at("blksize"));
-            blockSize = std::clamp(static_cast<size_t>(requestedSize), static_cast<size_t>(8), MAX_NEGOTIATED_BLKSIZE); // TFTP limits
+        auto requestedSize = parseUnsigned(options.at("blksize"));
+        if (requestedSize && *requestedSize >= MIN_NEGOTIATED_BLKSIZE)
+        {
+            blockSize = std::min(*requestedSize, MAX_NEGOTIATED_BLKSIZE);
             oack->addOption("blksize", std::to_string(blockSize));
             useOack = true;
-        } catch (...) {}
+        }
     }
 
-    // RFC 2349 TIMEOUT Option
+    // RFC 2349 TIMEOUT Option (must be in [1, 255] and echoed verbatim, never clamped)
     if (options.count("timeout"))
     {
-        try {
-            timeoutSec = std::stoi(options.at("timeout"));
-            timeoutSec = std::clamp(timeoutSec, MIN_TIMEOUT_SEC, MAX_TIMEOUT_SEC); // TFTP limits
+        auto requestedTimeout = parseUnsigned(options.at("timeout"));
+        if (requestedTimeout && *requestedTimeout >= MIN_TIMEOUT_SEC && *requestedTimeout <= MAX_TIMEOUT_SEC)
+        {
+            timeoutSec = static_cast<int>(*requestedTimeout);
             oack->addOption("timeout", std::to_string(timeoutSec));
             useOack = true;
-        } catch (...) {}
+        }
     }
 
     // RFC 2349 TSIZE Option
@@ -311,24 +337,25 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
     // for the server to handle, it may abort the transfer with an Error packet (error code 3)
     if (options.count("tsize"))
     {
-        // Extract the expected size from the WRQ options
-        totalExpectedSize = std::stoul(options.at("tsize"));
-
-        // Legacy applications may not send any tsize option, therefore skipping this check
-        // and probably allowing to exhaust the filesystem. TODO
-        std::error_code ec;
-        auto spaceInfo = std::filesystem::space(std::filesystem::current_path(), ec);
-        // check if file is too large for the server to handle 
-        if (!ec && totalExpectedSize > spaceInfo.available) 
+        auto requestedTsize = parseUnsigned(options.at("tsize"));
+        if (requestedTsize)
         {
-            ErrorPacket err(ErrorCode::DiskFull, "Not enough space on filesystem");
-            transferSocket.sendTo(err.serialize(), clientAddr);
-            return;
-        }
+            totalExpectedSize = *requestedTsize;
 
-        // Echo back the tsize in the OACK
-        oack->addOption("tsize", std::to_string(totalExpectedSize));
-        useOack = true;
+            std::error_code ec;
+            auto spaceInfo = std::filesystem::space(std::filesystem::current_path(), ec);
+            // check if file is too large for the server to handle 
+            if (!ec && totalExpectedSize > spaceInfo.available) 
+            {
+                ErrorPacket err(ErrorCode::DiskFull, "Not enough space on filesystem");
+                transferSocket.sendTo(err.serialize(), clientAddr);
+                return;
+            }
+
+            // Echo back the tsize in the OACK
+            oack->addOption("tsize", std::to_string(totalExpectedSize));
+            useOack = true;
+        }
     }
 
     if (!m_onWrite) 
