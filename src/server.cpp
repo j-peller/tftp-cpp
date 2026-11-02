@@ -33,14 +33,35 @@ void Server::run()
 
     while (m_running)
     {
+        // Poll with a short timeout so that stop() is honoured promptly
+        // instead of blocking forever in recvFrom().
+        if (!m_socket.waitReadable(200))
+        {
+            continue;
+        }
+
         // Use the base class socket directly
         if (m_socket.recvFrom(buffer, clientAddr)) 
         {
+            {
+                std::lock_guard<std::mutex> lock(m_sessionMutex);
+                ++m_activeSessions;
+            }
+
             std::thread([this, clientAddr, buffer]() {
                 this->handleRequest(clientAddr, buffer);
+
+                std::lock_guard<std::mutex> lock(m_sessionMutex);
+                --m_activeSessions;
+                m_sessionCv.notify_all();
             }).detach();
         }
     }
+
+    // Sessions run detached and reference this object, so wait until all
+    // of them have finished before returning (the Server may be destroyed next).
+    std::unique_lock<std::mutex> lock(m_sessionMutex);
+    m_sessionCv.wait(lock, [this]() { return m_activeSessions == 0; });
 }
 
 void Server::handleRequest(const struct sockaddr_in& clientAddr, const std::vector<uint8_t>& rawPacket)

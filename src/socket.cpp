@@ -3,8 +3,13 @@
 #include <stdexcept>
 #include <unistd.h>
 #include <cstring>
+#include <poll.h>
 
 namespace tftp {
+
+// Largest possible UDP payload. Negotiated block sizes (RFC 2348) can go up
+// to 65464 bytes, so the receive buffer must be able to hold a full datagram.
+static constexpr size_t MAX_DATAGRAM_SIZE = 65536;
 
 
 UDPSocket::UDPSocket(uint16_t port)
@@ -92,7 +97,7 @@ bool UDPSocket::recvFrom(std::vector<uint8_t>& buffer, struct sockaddr_in& sende
     }
 
     socklen_t addrLen = sizeof(sender);
-    buffer.resize(2048); 
+    buffer.resize(MAX_DATAGRAM_SIZE); 
 
     if (timeoutSec >= 0) 
     {
@@ -109,6 +114,21 @@ bool UDPSocket::recvFrom(std::vector<uint8_t>& buffer, struct sockaddr_in& sende
     
     buffer.resize(len);
     return true;
+}
+
+bool UDPSocket::waitReadable(int timeoutMs) const
+{
+    if (m_sockFd < 0)
+    {
+        return false;
+    }
+
+    struct pollfd pfd;
+    pfd.fd      = m_sockFd;
+    pfd.events  = POLLIN;
+    pfd.revents = 0;
+
+    return poll(&pfd, 1, timeoutMs) > 0 && (pfd.revents & POLLIN);
 }
 
 uint16_t UDPSocket::getPort() const 

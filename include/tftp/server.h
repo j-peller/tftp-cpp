@@ -6,6 +6,8 @@
 
 #include "tftp.h"
 #include <functional>
+#include <mutex>
+#include <condition_variable>
 
 namespace tftp {
 
@@ -38,7 +40,8 @@ public:
     void setWriteHandler(WriteHandler h) { m_onWrite = h; }
 
     /**
-     * Start the server. This call is blocking.
+     * Start the server. This call is blocking until stop() is called.
+     * Before returning, it waits for all active transfer sessions to finish.
      */
     void run(); 
 
@@ -56,6 +59,11 @@ private:
     ReadHandler  m_onRead;
     WriteHandler m_onWrite;
     ServerConfig m_config;
+
+    //--- Tracking of detached transfer sessions (see run())
+    std::mutex              m_sessionMutex;
+    std::condition_variable m_sessionCv;
+    size_t                  m_activeSessions = 0;
 };
 
 }

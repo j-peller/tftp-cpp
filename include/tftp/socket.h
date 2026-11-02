@@ -24,6 +24,12 @@ public:
     bool sendTo(const std::vector<uint8_t>& data, const struct sockaddr_in& destAddr);
     bool recvFrom(std::vector<uint8_t>& buffer, struct sockaddr_in& sender, int timeoutSec = 0);
 
+    /**
+     * Wait until a datagram is ready to be read.
+     * Returns true if data is available within timeoutMs milliseconds.
+     */
+    bool waitReadable(int timeoutMs) const;
+
     //--- Getters
     uint16_t getPort() const;
 
