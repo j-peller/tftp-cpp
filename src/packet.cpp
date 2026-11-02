@@ -1,5 +1,8 @@
 #include "tftp/packet.h"
 
+#include <algorithm>
+#include <cctype>
+
 namespace tftp {
 
 // Helper: Append uint16 in Network Byte Order (Big Endian)
@@ -29,6 +32,15 @@ std::string readString(const std::vector<uint8_t>& buffer, size_t& offset)
     return str;
 }
 
+// Helper: Lowercase a string. Mode and option names are case-insensitive
+// (RFC 1350, RFC 2347), so they are normalized while parsing.
+static std::string toLower(std::string str)
+{
+    std::transform(str.begin(), str.end(), str.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return str;
+}
+
 //--- Packet Factory
 std::unique_ptr<Packet> Packet::parse(const uint8_t* buffer, size_t len) 
 {
@@ -48,14 +60,18 @@ std::unique_ptr<Packet> Packet::parse(const uint8_t* buffer, size_t len)
         case Opcode::RRQ:
         case Opcode::WRQ: {
             std::string filename = readString(vecBuffer, offset);
-            std::string mode     = readString(vecBuffer, offset);
+            std::string mode     = toLower(readString(vecBuffer, offset));
             auto pkt = std::make_unique<RequestPacket>(static_cast<Opcode>(opcode), filename, mode);
 
             // Parse options if any
             while (offset < len) 
             {
-                std::string key = readString(vecBuffer, offset);
+                std::string key = toLower(readString(vecBuffer, offset));
                 if (key.empty()) break;
+                if (offset >= len)
+                {
+                    throw std::runtime_error("Malformed TFTP option: missing value for " + key);
+                }
                 std::string value = readString(vecBuffer, offset);
                 pkt->addOption(key, value);
             }
@@ -90,8 +106,12 @@ std::unique_ptr<Packet> Packet::parse(const uint8_t* buffer, size_t len)
             // Parse options if any
             while (offset < len) 
             {
-                std::string key = readString(vecBuffer, offset);
-                if (offset >= len) break;
+                std::string key = toLower(readString(vecBuffer, offset));
+                if (key.empty()) break;
+                if (offset >= len)
+                {
+                    throw std::runtime_error("Malformed OACK option: missing value for " + key);
+                }
                 std::string value = readString(vecBuffer, offset);
                 pkt->addOption(key, value);
             }
