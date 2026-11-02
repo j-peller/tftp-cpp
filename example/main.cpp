@@ -56,7 +56,7 @@ int main(int argc, char* argv[]) {
         auto space = std::filesystem::space(std::filesystem::current_path());
         std::cout << "[System] Available Disk Space: " << space.available / (1024 * 1024) << " MB" << std::endl;
 
-        tftp::Server server(port);
+        tftp::Server server({port, 2, 512});
 
         // Handler responsible for reading the file from disk
         server.setReadHandler([](const std::string& fname) -> std::vector<uint8_t> {
