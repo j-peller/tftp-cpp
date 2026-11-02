@@ -439,14 +439,16 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
                             // Append data to file buffer
                             receivedFile.insert(receivedFile.end(), data.begin(), data.end());
                             
-                            // Send ACK for this block
-                            AckPacket ack(expectedBlock);
-                            transferSocket.sendTo(ack.serialize(), clientAddr);
-                            
-                            // Check if this was the last packet
+                            // Check if this was the last packet; the final ACK is sent
+                            // after m_onWrite succeeds so errors can still be reported.
                             if (data.size() < blockSize) 
                             {
                                 transferActive = false;
+                            }
+                            else
+                            {
+                                AckPacket ack(expectedBlock);
+                                transferSocket.sendTo(ack.serialize(), clientAddr);
                             }
                             
                             // Move to next expected block
@@ -473,10 +475,18 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
                 attempts++;
                 if (attempts < MAX_RETRIES) 
                 {
-                    AckPacket lastAck(expectedBlock - 1);
-                    transferSocket.sendTo(lastAck.serialize(), clientAddr);
-                    std::cout << "Timeout waiting for block " << expectedBlock 
-                              << " - Retransmitting ACK for block " << (expectedBlock -1) << std::endl;
+                    if (expectedBlock == 1 && useOack)
+                    {
+                        transferSocket.sendTo(oack->serialize(), clientAddr);
+                        std::cout << "Timeout waiting for block 1 - Retransmitting OACK" << std::endl;
+                    }
+                    else
+                    {
+                        AckPacket lastAck(expectedBlock - 1);
+                        transferSocket.sendTo(lastAck.serialize(), clientAddr);
+                        std::cout << "Timeout waiting for block " << expectedBlock 
+                                  << " - Retransmitting ACK for block " << (expectedBlock - 1) << std::endl;
+                    }
                 }
             }
         }
@@ -488,9 +498,11 @@ void Server::handleWriteRequest(const struct sockaddr_in& clientAddr, const Requ
         }
     }
 
-    // 3. Finalize Write (User Logic)
+    // 3. Finalize Write (User Logic) before acknowledging the final block
     try {
         m_onWrite(filename, receivedFile);
+        AckPacket finalAck(expectedBlock - 1);
+        transferSocket.sendTo(finalAck.serialize(), clientAddr);
         std::cout << "Write transfer for " << filename << " complete." << std::endl;
     } catch (const std::exception& e) {
         ErrorPacket err(ErrorCode::AccessViolation, e.what());
