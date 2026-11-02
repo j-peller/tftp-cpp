@@ -2,6 +2,7 @@
 
 #include <thread>
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <filesystem>
 #include <optional>
@@ -26,6 +27,75 @@ std::optional<size_t> parseUnsigned(const std::string& str)
         val = val * 10 + static_cast<unsigned long long>(c - '0');
     }
     return static_cast<size_t>(val);
+}
+
+/**
+ * Send pkt (OACK or DATA) and wait for ACK(expectedBlock).
+ * - Retransmits pkt only on timeout (up to MAX_RETRIES), avoiding Sorcerer's
+ *   Apprentice Syndrome on duplicate ACKs (RFC 1123 section 4.2.3.1).
+ * - Aborts immediately if the client sends an ERROR packet (RFC 1350 / 2347).
+ * - Replies with ERROR 5 (Unknown TID) to packets from foreign peers (RFC 1350).
+ */
+bool sendAndAwaitAck(UDPSocket& sock, const Packet& pkt, uint16_t expectedBlock,
+                     const struct sockaddr_in& clientAddr, int timeoutSec, int maxRetries)
+{
+    using Clock = std::chrono::steady_clock;
+    auto rawPkt = pkt.serialize();
+
+    for (int attempt = 0; attempt < maxRetries; ++attempt)
+    {
+        if (!sock.sendTo(rawPkt, clientAddr))
+        {
+            return false;
+        }
+
+        auto deadline = Clock::now() + std::chrono::seconds(timeoutSec);
+        while (true)
+        {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - Clock::now());
+            if (remaining.count() <= 0 || !sock.waitReadable(static_cast<int>(remaining.count())))
+            {
+                break; // timeout -> retransmit on next attempt
+            }
+
+            std::vector<uint8_t> rxBuffer;
+            struct sockaddr_in peer{};
+            if (!sock.recvFrom(rxBuffer, peer, 0))
+            {
+                continue;
+            }
+
+            if (!sameTid(peer, clientAddr))
+            {
+                ErrorPacket err(ErrorCode::UnknownTID, "Unknown transfer ID");
+                sock.sendTo(err.serialize(), peer);
+                continue;
+            }
+
+            try
+            {
+                auto response = Packet::parse(rxBuffer.data(), rxBuffer.size());
+                if (response->getOpcode() == Opcode::ERROR)
+                {
+                    return false; // Client aborted the transfer
+                }
+                if (response->getOpcode() == Opcode::ACK)
+                {
+                    auto* ack = static_cast<AckPacket*>(response.get());
+                    if (ack->getBlockNumber() == expectedBlock)
+                    {
+                        return true;
+                    }
+                    // Duplicate ACK for an earlier block: ignore and keep waiting
+                    // until deadline (RFC 1123 section 4.2.3.1).
+                }
+            }
+            catch (...) {}
+        }
+    }
+
+    return false;
 }
 
 } // namespace
@@ -198,38 +268,10 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
         }
     }
 
-    // If options were negotiated, send OACK
+    // If options were negotiated, send OACK and wait for ACK 0 (with retries)
     if (useOack)
     {
-        transferSocket.sendTo(oack->serialize(), clientAddr);
-        std::vector<uint8_t> rxBuffer;
-        struct sockaddr_in peer;
-        bool confirmed = false;
-
-        while (transferSocket.recvFrom(rxBuffer, peer, timeoutSec)) 
-        {
-            if (!sameTid(peer, clientAddr))
-            {
-                ErrorPacket err(ErrorCode::UnknownTID, "Unknown transfer ID");
-                transferSocket.sendTo(err.serialize(), peer);
-                continue;
-            }
-            try {
-                auto response = Packet::parse(rxBuffer.data(), rxBuffer.size());
-                if (response->getOpcode() == Opcode::ACK) 
-                {
-                    // Client confirms OACK with ACK block 0
-                    auto ack = static_cast<AckPacket*>(response.get());
-                    if (ack->getBlockNumber() == 0) 
-                    {
-                       confirmed = true;
-                    }
-                }
-            } catch(...) {}
-            break;
-        }
-
-        if (!confirmed)
+        if (!sendAndAwaitAck(transferSocket, *oack, 0, clientAddr, timeoutSec, MAX_RETRIES))
         {
             std::cerr << "OACK negotiation failed or timed out." << std::endl;
             return;
@@ -247,47 +289,7 @@ void Server::handleReadRequest(const struct sockaddr_in& clientAddr, const Reque
         std::vector<uint8_t> chunkData(fileContent.begin() + offset, fileContent.begin() + offset + chunk);
         
         DataPacket dataPkt(blockNumber, chunkData);
-        if (!transferSocket.sendTo(dataPkt.serialize(), clientAddr)) break;
-
-        std::vector<uint8_t> rxBuffer;
-        struct sockaddr_in peer;
-        bool acked = false;
-        int attempts = 0;
-
-        while(attempts < MAX_RETRIES) 
-        {
-            // Re-using the socket wrapper logic on the transfer-specific socket
-            if (transferSocket.recvFrom(rxBuffer, peer, timeoutSec)) { 
-                if (!sameTid(peer, clientAddr))
-                {
-                    ErrorPacket err(ErrorCode::UnknownTID, "Unknown transfer ID");
-                    transferSocket.sendTo(err.serialize(), peer);
-                    continue;
-                }
-                try {
-                    auto response = Packet::parse(rxBuffer.data(), rxBuffer.size());
-                    if (response->getOpcode() == Opcode::ACK) 
-                    {
-                        auto ack = static_cast<AckPacket*>(response.get());
-                        if (ack->getBlockNumber() == blockNumber) 
-                        {
-                           acked = true;
-                           break;
-                        }
-                    }
-                } catch(...) {}
-            }
-
-            // Retransmit if we didn't get the right ACK in time
-            attempts++;
-            if (!acked && attempts < MAX_RETRIES) 
-            {
-                std::cout << "Retransmitting block " << blockNumber << std::endl;
-                transferSocket.sendTo(dataPkt.serialize(), clientAddr);
-            }
-        }
-
-        if (!acked) 
+        if (!sendAndAwaitAck(transferSocket, dataPkt, blockNumber, clientAddr, timeoutSec, MAX_RETRIES))
         {
             std::cerr << "Failed to receive ACK for block " << blockNumber << std::endl;
             break;
