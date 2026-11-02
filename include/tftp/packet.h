@@ -30,7 +30,8 @@ enum class ErrorCode : uint16_t {
     IllegalOp       = 4,
     UnknownTID      = 5,
     FileExists      = 6,
-    NoSuchUser      = 7
+    NoSuchUser        = 7,
+    OptionNegotiation = 8 // RFC 2347: terminate transfer due to option negotiation
 };
 
 /**

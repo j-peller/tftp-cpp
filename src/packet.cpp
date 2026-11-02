@@ -77,7 +77,9 @@ std::unique_ptr<Packet> Packet::parse(const uint8_t* buffer, size_t len)
         }
 
         case Opcode::ERROR: {
+            if (len < 4) throw std::runtime_error("ERROR packet too short");
             uint16_t code = (vecBuffer[2] << 8) | vecBuffer[3];
+            offset = 4;
             std::string msg = readString(vecBuffer, offset);
             return std::make_unique<ErrorPacket>(static_cast<ErrorCode>(code), msg);
         }
